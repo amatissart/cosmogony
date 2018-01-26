@@ -3,7 +3,7 @@ use std::fmt;
 use zone::Zone;
 use admin_type::AdminType;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct Cosmogony {
     pub zones: Vec<Zone>,
     pub meta: CosmogonyMetadata,

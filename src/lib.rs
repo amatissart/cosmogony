@@ -1,7 +1,10 @@
 extern crate failure;
+extern crate geo;
+extern crate gst;
 #[macro_use]
 extern crate log;
 extern crate mimirsbrunn;
+extern crate ordered_float;
 extern crate osmpbfreader;
 #[macro_use]
 extern crate serde_derive;
@@ -9,6 +12,7 @@ extern crate serde_yaml;
 extern crate structopt;
 
 mod zone;
+mod hierarchy_builder;
 pub mod admin_type;
 pub mod cosmogony;
 
@@ -20,9 +24,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::prelude::*;
 use std::io;
-
+use hierarchy_builder::build_hierarchy;
 use failure::Error;
 use failure::ResultExt;
+use zone::ZoneIndex;
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
 pub fn is_admin(obj: &OsmObj) -> bool {
@@ -46,24 +51,27 @@ pub fn get_zones_and_stats(
         .context("invalid osm file")?;
     info!("reading pbf done.");
 
-    let mut zones = vec![];
     let mut stats = CosmogonyStats::default();
+    let mut zones = vec![];
 
     for obj in objects.values() {
         if !is_admin(obj) {
             continue;
         }
         if let OsmObj::Relation(ref relation) = *obj {
-            if let Some(zone) = zone::Zone::from_osm_with_geom(relation, &objects) {
+            let next_index = ZoneIndex { index: zones.len() };
+            if let Some(zone) = zone::Zone::from_osm_with_geom(relation, &objects, next_index) {
                 // Ignore zone without boundary polygon
+
                 if zone.boundary.is_some() {
                     stats.process(&zone);
                     zones.push(zone);
                 }
-            }
+            };
         }
     }
 
+    build_hierarchy(&mut zones);
     return Ok((zones, stats));
 }
 
@@ -80,7 +88,8 @@ pub fn get_zones_and_stats_without_geom(
             continue;
         }
         if let OsmObj::Relation(ref relation) = obj {
-            if let Some(zone) = zone::Zone::from_osm(relation) {
+            let next_index = ZoneIndex { index: zones.len() };
+            if let Some(zone) = zone::Zone::from_osm(relation, next_index) {
                 stats.process(&zone);
                 zones.push(zone);
             }

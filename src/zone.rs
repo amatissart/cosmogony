@@ -1,22 +1,30 @@
 extern crate geo;
 extern crate geojson;
+extern crate geos;
 extern crate itertools;
 extern crate mimir;
 extern crate mimirsbrunn;
 extern crate serde;
 
-use std::rc::Rc;
 use self::itertools::Itertools;
-use self::mimir::{Coord, Property};
-use osmpbfreader::objects::{OsmId, OsmObj, Relation};
+use self::mimir::Coord;
+use osmpbfreader::objects::{OsmId, OsmObj, Relation, Tags};
 use self::mimirsbrunn::boundaries::{build_boundary, make_centroid};
 use std::collections::BTreeMap;
+use self::geos::GGeom;
+use self::serde::Serialize;
 
 use admin_type::AdminType;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
+pub struct ZoneIndex {
+    pub index: usize,
+}
+
+#[derive(Serialize, Debug, Clone)]
 pub struct Zone {
-    pub id: String,
+    pub id: ZoneIndex,
+    pub osm_id: String,
     pub admin_level: Option<u32>,
     pub admin_type: Option<AdminType>,
     pub name: String,
@@ -25,10 +33,13 @@ pub struct Zone {
     #[serde(serialize_with = "serialize_as_geojson", deserialize_with = "deserialize_as_geojson",
             rename = "geometry", default)]
     pub boundary: Option<geo::MultiPolygon<f64>>,
-    pub parent: Option<Rc<Zone>>,
-    pub tags: Vec<Property>,
+
+    #[serde(skip_serializing)]
+    pub tags: Tags,
+
+    pub parent: Option<ZoneIndex>,
     pub wikidata: Option<String>,
-    // pub links: Vec<Rc<Zone>>
+    // pub links: Vec<ZoneIndex>
 }
 
 impl Zone {
@@ -40,7 +51,11 @@ impl Zone {
         }
     }
 
-    pub fn from_osm(relation: &Relation) -> Option<Self> {
+    pub fn set_parent(&mut self, idx: Option<ZoneIndex>) {
+        self.parent = idx;
+    }
+
+    pub fn from_osm(relation: &Relation, index: ZoneIndex) -> Option<Self> {
         // Skip administrative region without name
         let name = match relation.tags.get("name") {
             Some(val) => val,
@@ -70,7 +85,8 @@ impl Zone {
         let wikidata = relation.tags.get("wikidata").map(|s| s.to_string());
 
         Some(Self {
-            id: relation.id.0.to_string(),
+            id: index,
+            osm_id: relation.id.0.to_string(),
             admin_level: level,
             admin_type: None,
             name: name.to_string(),
@@ -78,7 +94,7 @@ impl Zone {
             center: None,
             boundary: None,
             parent: None,
-            tags: vec![],
+            tags: relation.tags.clone(),
             wikidata: wikidata,
         })
     }
@@ -86,8 +102,9 @@ impl Zone {
     pub fn from_osm_with_geom(
         relation: &Relation,
         objects: &BTreeMap<OsmId, OsmObj>,
+        index: ZoneIndex,
     ) -> Option<Self> {
-        Self::from_osm(relation).map(|mut result| {
+        Self::from_osm(relation, index).map(|mut result| {
             result.boundary = build_boundary(relation, objects);
 
             result.center = Some(
@@ -104,6 +121,20 @@ impl Zone {
 
             result
         })
+    }
+
+    pub fn contains(&self, other: &Zone) -> bool {
+        return match (&self.boundary, &other.boundary) {
+            (&Some(ref mpoly1), &Some(ref mpoly2)) => {
+                let m_self: GGeom = mpoly1.into();
+                let m_other: GGeom = mpoly2.into();
+
+                // In GEOS, "covers" is less strict than "contains".
+                // eg: a polygon does NOT "contain" its boundary, but "covers" it.
+                m_self.covers(&m_other)
+            }
+            _ => false,
+        };
     }
 }
 
@@ -151,4 +182,13 @@ where
             _ => None,
         })
     })
+}
+
+impl Serialize for ZoneIndex {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u64(self.index as u64)
+    }
 }

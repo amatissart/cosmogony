@@ -26,8 +26,7 @@ struct Args {
     output: Option<String>,
     #[structopt(long = "print-stats", default_value = "true")]
     print_stats: bool,
-    #[structopt(help = "Do not read the geometry of the boundaries", long = "disable-geom",
-                default_value = "false")]
+    #[structopt(help = "Do not read the geometry of the boundaries", long = "disable-geom")]
     disable_geom: bool,
 }
 
