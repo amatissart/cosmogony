@@ -13,6 +13,8 @@ extern crate structopt;
 
 mod zone;
 mod hierarchy_builder;
+mod country_finder;
+mod utils;
 pub mod admin_type;
 pub mod cosmogony;
 

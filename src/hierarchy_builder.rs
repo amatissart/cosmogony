@@ -2,10 +2,11 @@ extern crate geo;
 
 use std::iter::FromIterator;
 use zone::{Zone, ZoneIndex};
-use gst::rtree::{RTree, Rect};
-use ordered_float::OrderedFloat;
-use geo::Bbox;
+use gst::rtree::RTree;
 use geo::boundingbox::BoundingBox;
+use utils::bbox_to_rect;
+
+use country_finder::CountryFinder;
 
 pub struct ZonesTree {
     tree: RTree<ZoneIndex>,
@@ -56,18 +57,9 @@ impl<'a> FromIterator<&'a Zone> for ZonesTree {
     }
 }
 
-pub fn bbox_to_rect(bbox: Bbox<f64>) -> Rect {
-    // rust-geo bbox algorithm returns `Bbox`,
-    // while gst RTree uses `Rect` as index.
-    Rect {
-        xmin: OrderedFloat(down(bbox.xmin as f32)),
-        xmax: OrderedFloat(up(bbox.xmax as f32)),
-        ymin: OrderedFloat(down(bbox.ymin as f32)),
-        ymax: OrderedFloat(up(bbox.ymax as f32)),
-    }
-}
-
 pub fn build_hierarchy(zones: &mut [Zone]) {
+
+    let country_finder: CountryFinder = zones.iter().collect();
     let ztree: ZonesTree = zones.iter().collect();
     let nb_zones = zones.len();
 
@@ -76,6 +68,9 @@ pub fn build_hierarchy(zones: &mut [Zone]) {
         if z1.parent.is_some() {
             continue;
         }
+
+        let country_code = country_finder.find_zone_country(&z1);
+        println!("Country of {} is {:?}", z1.name, country_code);
 
         let mut parents: Vec<_> = ztree
             .fetch_zone_bbox(z1)
@@ -93,6 +88,19 @@ pub fn build_hierarchy(zones: &mut [Zone]) {
 
         // Temporary: we want to sort by admin_type
         parents.sort_by_key(|p| p.admin_level.unwrap_or(0));
+
+        ///// Optimization idea :
+        ///// retrieve (parent,child) among parents list
+        //
+        // parents.windows(2).for_each(|w| {
+        //     let w0 = w[0];
+        //     let w1 = w[1];
+        //     if w1.parent.is_none() && w0.contains(w1){
+        //         println!("Optim?: {} parent is {}", w1.id.index, w0.id.index);
+        //         temp_parents.push((w1.id.clone().index, w0.id.clone()))
+        //     }
+        // });
+
         z1.set_parent(parents.last().map(|z| z.id.clone()));
     }
 }
@@ -129,14 +137,6 @@ impl<'a> MutableSlice<'a> {
             return &self.right[idx - self.idx - 1];
         }
     }
-}
-
-// the goal is that f in [down(f as f32) as f64, up(f as f32) as f64]
-fn down(f: f32) -> f32 {
-    f - (f * ::std::f32::EPSILON).abs()
-}
-fn up(f: f32) -> f32 {
-    f + (f * ::std::f32::EPSILON).abs()
 }
 
 #[cfg(test)]
