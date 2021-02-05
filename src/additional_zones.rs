@@ -63,10 +63,6 @@ impl<'a> GeosBoundaryCache<'a> {
     }
 }
 
-fn is_city(zone: &Zone) -> bool {
-    zone.zone_type == Some(ZoneType::City) && zone.boundary.is_some() && !zone.name.is_empty()
-}
-
 pub fn compute_additional_cities(
     zones: &mut Vec<Zone>,
     parsed_pbf: &BTreeMap<OsmId, OsmObj>,
@@ -81,9 +77,7 @@ pub fn compute_additional_cities(
     let candidate_parent_zones = place_zones
         .par_iter()
         .filter_map(|place| {
-            if place.zone_type.is_none() {
-                return None;
-            }
+            place.zone_type?;
             get_parent(&place, &zones, &zones_rtree).map(|p| (p, place))
         })
         .filter(|(p, place)| {
@@ -138,7 +132,11 @@ fn get_parent<'a>(place: &Zone, zones: &'a [Zone], zones_rtree: &ZonesTree) -> O
         .fetch_zone_bbox(&place)
         .into_iter()
         .map(|z_idx| &zones[z_idx.index])
-        .filter(|z| z.zone_type.is_some())
+        .filter(|z| {
+            z.admin_type()
+                .map(|zt| zt >= ZoneType::City)
+                .unwrap_or(false)
+        })
         .sorted_by_key(|z| z.zone_type)
         .find(|z| z.contains_center(place))
 }
@@ -199,10 +197,14 @@ fn convert_to_geo(geom: Geometry<'_>) -> Option<MultiPolygon<f64>> {
     }
 }
 
-// Extrude all common parts between `zone` and the given `towns`. If an error occurs during the
+// Extrude all common parts between `zone` and the given zones `to_subtract`. If an error occurs during the
 // process, it'll return `false`.
-fn extrude_existing_town(zone: &mut Zone, towns: &[&Zone], geos_cache: &GeosBoundaryCache) -> bool {
-    if towns.is_empty() {
+fn subtract_existing_zones(
+    zone: &mut Zone,
+    to_subtract: &[&Zone],
+    geos_cache: &GeosBoundaryCache,
+) -> bool {
+    if to_subtract.is_empty() {
         return true;
     }
     if let Some(ref boundary) = zone.boundary {
@@ -217,9 +219,9 @@ fn extrude_existing_town(zone: &mut Zone, towns: &[&Zone], geos_cache: &GeosBoun
                 return false;
             }
         };
-        for town in towns {
-            if geos_cache.intersects(&g_boundary, town) {
-                match geos_cache.difference(&g_boundary, town) {
+        for z in to_subtract {
+            if geos_cache.intersects(&g_boundary, z) {
+                match geos_cache.difference(&g_boundary, z) {
                     Ok(b) => {
                         updates += 1;
                         g_boundary = b;
@@ -251,7 +253,7 @@ fn extrude_existing_town(zone: &mut Zone, towns: &[&Zone], geos_cache: &GeosBoun
     true
 }
 
-fn get_parent_neighbors<'a>(
+fn get_zones_to_subtract<'a>(
     parent: &Zone,
     zones: &'a [Zone],
     zones_rtree: &ZonesTree,
@@ -260,7 +262,13 @@ fn get_parent_neighbors<'a>(
         .fetch_zone_bbox(&parent)
         .into_iter()
         .map(|z_idx| &zones[z_idx.index])
-        .filter(|z| is_city(z))
+        .filter(|z| {
+            z.admin_type()
+                .map(|zt| {
+                    zt == ZoneType::City || (zt > ZoneType::City && z.parent == Some(parent.id))
+                })
+                .unwrap_or(false)
+        })
         .collect()
 }
 
@@ -319,7 +327,7 @@ fn compute_voronoi(
 
     // TODO: It "could" be better to instead compute the bbox for every new town and then call
     //       this function instead. To be checked...
-    let towns = get_parent_neighbors(&parent, zones, zones_rtree);
+    let zones_to_subtract = get_zones_to_subtract(&parent, zones, zones_rtree);
 
     if points.len() == 1 {
         let mut place = places[0].clone();
@@ -327,7 +335,7 @@ fn compute_voronoi(
         place.boundary = parent.boundary.clone();
         place.parent = Some(parent.id);
         // If an error occurs, we can't just use the parent area so instead, we return nothing.
-        if extrude_existing_town(&mut place, &towns, &geos_cache) {
+        if subtract_existing_zones(&mut place, &zones_to_subtract, &geos_cache) {
             if let Some(ref boundary) = place.boundary {
                 place.bbox = boundary.bounding_rect();
             }
@@ -405,7 +413,7 @@ fn compute_voronoi(
                 Ok(s) => {
                     place.parent = Some(parent.id);
                     place.boundary = convert_to_geo(s);
-                    extrude_existing_town(&mut place, &towns, &geos_cache);
+                    subtract_existing_zones(&mut place, &zones_to_subtract, &geos_cache);
                     if let Some(ref boundary) = place.boundary {
                         place.bbox = boundary.bounding_rect();
                     }
